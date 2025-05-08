@@ -7,10 +7,9 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.3/leaflet.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.3/leaflet.css">
     <style>
-        body {
+        html, body {
+            height: 100%;
             margin: 0;
-            padding: 0;
-            font-family: Arial, sans-serif;
         }
         #app {
             display: flex;
@@ -36,10 +35,12 @@
         .content {
             display: flex;
             flex: 1;
+            height: calc(100vh - 60px);
         }
         #map {
             flex: 1;
             height: 100%;
+            min-height: 0;
         }
         .sidebar {
             width: 300px;
@@ -133,6 +134,33 @@
             box-shadow: 0 2px 5px rgba(0,0,0,0.2);
             display: flex;
             gap: 10px;
+            align-items: center;
+        }
+        .marker-item .category {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 5px;
+            vertical-align: middle;
+        }
+        .undo-redo-controls {
+            margin-left: 10px;
+            display: flex;
+            gap: 5px;
+        }
+        .mission-controls {
+            background-color: #fff;
+            padding: 1rem;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .path-toggle {
+            margin-top: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 5px;
         }
     </style>
 </head>
@@ -143,6 +171,11 @@
             <div class="header-controls">
                 <button id="export-button">Export Markers</button>
                 <button id="import-button">Import Markers</button>
+                <button id="clear-button">Clear All</button>
+                <div class="undo-redo-controls">
+                    <button id="undo-button">Undo</button>
+                    <button id="redo-button">Redo</button>
+                </div>
             </div>
         </header>
         <div class="content">
@@ -153,7 +186,6 @@
                     <p>Click anywhere on the map to create a new marker, or use the coordinate controls below.</p>
                     <p>You can edit or delete existing markers from the list below.</p>
                 </div>
-
                 <div class="coordinate-controls">
                     <h3>Go To Coordinates</h3>
                     <div class="coordinate-fields">
@@ -171,7 +203,19 @@
                         <button id="add-at-coords" style="flex: 1;">Add Marker Here</button>
                     </div>
                 </div>
-
+                <div class="mission-controls">
+                    <h3>Mission Filter</h3>
+                    <div class="form-group">
+                        <label for="mission-select">Select Mission:</label>
+                        <select id="mission-select">
+                            <option value="all">All Missions</option>
+                        </select>
+                    </div>
+                    <div class="path-toggle">
+                        <input type="checkbox" id="show-path" checked>
+                        <label for="show-path">Show Mission Path</label>
+                    </div>
+                </div>
                 <div id="marker-form" style="display: none;">
                     <h2>Marker Details</h2>
                     <div class="form-group">
@@ -187,6 +231,20 @@
                         <input type="date" id="date">
                     </div>
                     <div class="form-group">
+                        <label for="category">Category:</label>
+                        <select id="category">
+                            <option value="red">Red (Default)</option>
+                            <option value="blue">Blue</option>
+                            <option value="green">Green</option>
+                            <option value="yellow">Yellow</option>
+                            <option value="purple">Purple</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="mission">Mission:</label>
+                        <input type="text" id="mission" placeholder="Enter mission name">
+                    </div>
+                    <div class="form-group">
                         <label>Coordinates:</label>
                         <div style="display: flex; gap: 10px; margin-bottom: 10px;">
                             <input type="number" id="marker-lat" step="0.000001" min="-90" max="90" placeholder="Latitude">
@@ -196,7 +254,6 @@
                     <button id="save-marker">Save Marker</button>
                     <button id="cancel-marker">Cancel</button>
                 </div>
-
                 <h2>Your Markers</h2>
                 <div id="marker-list" class="marker-list">
                     <p>No markers added yet. Click on the map to add one.</p>
@@ -204,80 +261,63 @@
             </div>
         </div>
     </div>
-
     <script>
-        // Initialize the map centered on (0,0) with zoom level 2 to show most of the Earth
-        const map = L.map('map', {
-            worldCopyJump: true,  // Enables seamless horizontal wrapping
-            minZoom: 1  // Minimum zoom level
+        // Initialize variables
+        let markers = [];
+        let currentMarker = null;
+        let editingMarker = null;
+        let history = [];
+        let historyIndex = -1;
+        let polylines = {};
+
+        // Initialize map
+        let map = L.map('map', {
+            worldCopyJump: true,
+            minZoom: 1
         }).setView([0, 0], 2);
 
-        // Map types with National Geographic as the primary option
+        // Define map types
         const mapTypes = [
-            { 
-                name: 'National Geographic', 
-                url: 'https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}', 
-                attribution: 'Tiles &copy; Esri &mdash; National Geographic, Esri, DeLorme, NAVTEQ, UNEP-WCMC, USGS, NASA, ESA, METI, NRCAN, GEBCO, NOAA, iPC' 
-            },
-            { 
-                name: 'NatGeo with Imagery', 
-                url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
-                attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community' 
-            },
-            { 
-                name: 'Terrain', 
-                url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}', 
-                attribution: 'Tiles &copy; Esri &mdash; Source: USGS, Esri, TANA, DeLorme, and NPS' 
-            },
-            { 
-                name: 'Oceans', 
-                url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}', 
-                attribution: 'Tiles &copy; Esri &mdash; Sources: GEBCO, NOAA, CHS, OSU, UNH, CSUMB, National Geographic, DeLorme, NAVTEQ, and Esri' 
-            },
-            { 
-                name: 'World Light Gray', 
-                url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', 
-                attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ' 
-            }
+            { name: 'ArcGIS World Street Map', url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri' },
+            { name: 'ArcGIS World Imagery', url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri' },
+            { name: 'ArcGIS Topographic', url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri' },
+            { name: 'ArcGIS Terrain Base', url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri' },
+            { name: 'ArcGIS Ocean Base', url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri' },
+            { name: 'ArcGIS Shaded Relief', url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri' },
+            { name: 'ArcGIS Physical Map', url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Physical_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri' },
+            { name: 'ArcGIS National Geographic', url: 'https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri — National Geographic, Esri, DeLorme, NAVTEQ, UNEP-WCMC, USGS, NASA, ESA, METI, NRCAN, GEBCO, NOAA, iPC' }
         ];
 
-        // Set up the base maps and overlay
         let baseMaps = {};
         let currentBaseLayer = null;
         let boundaryLayer = null;
 
-        // Create base layers
+        // Add base layers
         mapTypes.forEach((mapType, index) => {
             const layer = L.tileLayer(mapType.url, {
                 attribution: mapType.attribution,
                 noWrap: false
             });
-            
             baseMaps[mapType.name] = layer;
-            
-            // Add the first layer to the map by default
             if (index === 0) {
                 currentBaseLayer = layer;
                 layer.addTo(map);
             }
         });
 
-        // Add boundaries layer from ArcGIS
+        // Add boundary layer
         boundaryLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
-            attribution: 'Boundaries &copy; Esri',
-            pane: 'overlayPane' // Make sure boundaries are drawn on top
-        }).addTo(map);
-
-        // Variables
-        let markers = [];
-        let currentMarker = null;
-        let editingMarker = null;
+            attribution: 'Boundaries © Esri',
+            pane: 'overlayPane'
+        });
 
         // DOM elements
         const markerForm = document.getElementById('marker-form');
         const titleInput = document.getElementById('title');
         const descriptionInput = document.getElementById('description');
         const dateInput = document.getElementById('date');
+        const categoryInput = document.getElementById('category');
+        const missionInput = document.getElementById('mission');
         const markerLatInput = document.getElementById('marker-lat');
         const markerLngInput = document.getElementById('marker-lng');
         const saveButton = document.getElementById('save-marker');
@@ -289,15 +329,13 @@
         const addAtCoordsButton = document.getElementById('add-at-coords');
         const exportButton = document.getElementById('export-button');
         const importButton = document.getElementById('import-button');
+        const clearButton = document.getElementById('clear-button');
+        const undoButton = document.getElementById('undo-button');
+        const redoButton = document.getElementById('redo-button');
+        const missionSelect = document.getElementById('mission-select');
+        const showPathCheckbox = document.getElementById('show-path');
 
-        // Update coordinates display when map moves
-        map.on('moveend', function() {
-            const center = map.getCenter();
-            gotoLatInput.value = center.lat.toFixed(6);
-            gotoLngInput.value = center.lng.toFixed(6);
-        });
-
-        // Initialize the coordinate inputs with current map center
+        // Set initial coordinates
         const initialCenter = map.getCenter();
         gotoLatInput.value = initialCenter.lat.toFixed(6);
         gotoLngInput.value = initialCenter.lng.toFixed(6);
@@ -307,58 +345,58 @@
             createTemporaryMarker(e.latlng.lat, e.latlng.lng);
         });
 
-        // Go to coordinates button
+        // Go to coordinates
         gotoButton.addEventListener('click', function() {
             const lat = parseFloat(gotoLatInput.value);
             const lng = parseFloat(gotoLngInput.value);
-            
             if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
                 alert('Please enter valid coordinates. Latitude: -90 to 90, Longitude: -180 to 180');
                 return;
             }
-            
             map.setView([lat, lng], map.getZoom());
         });
 
-        // Add marker at current coordinates
+        // Add marker at coordinates
         addAtCoordsButton.addEventListener('click', function() {
             const lat = parseFloat(gotoLatInput.value);
             const lng = parseFloat(gotoLngInput.value);
-            
             if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
                 alert('Please enter valid coordinates. Latitude: -90 to 90, Longitude: -180 to 180');
                 return;
             }
-            
             createTemporaryMarker(lat, lng);
         });
 
         function createTemporaryMarker(lat, lng) {
-            // Remove temporary marker if exists
             if (currentMarker) {
                 map.removeLayer(currentMarker);
             }
-            
-            // Add temporary marker
             currentMarker = L.marker([lat, lng]).addTo(map);
-            
-            // Show form
             markerForm.style.display = 'block';
             titleInput.value = '';
             descriptionInput.value = '';
             dateInput.value = '';
+            categoryInput.value = 'red';
+            missionInput.value = '';
             markerLatInput.value = lat.toFixed(6);
             markerLngInput.value = lng.toFixed(6);
-            
-            // Reset editing state
             editingMarker = null;
         }
 
-        // Save marker
+        function getMarkerIcon(category) {
+            return L.divIcon({
+                className: 'custom-marker',
+                html: `<div style="background-color: ${category}; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white;"></div>`,
+                iconSize: [20, 20],
+                iconAnchor: [10, 10]
+            });
+        }
+
         saveButton.addEventListener('click', function() {
             const title = titleInput.value.trim();
             const lat = parseFloat(markerLatInput.value);
             const lng = parseFloat(markerLngInput.value);
+            const category = categoryInput.value;
             
             if (!title) {
                 alert('Please enter a title for your marker.');
@@ -370,51 +408,46 @@
                 return;
             }
             
-            // Remove existing temp marker if any
             if (currentMarker) {
                 map.removeLayer(currentMarker);
             }
             
-            // Create a new marker at the specified location
-            const newMapMarker = L.marker([lat, lng]).addTo(map);
+            const newMapMarker = L.marker([lat, lng], { icon: getMarkerIcon(category) }).addTo(map);
             
             const marker = {
                 id: editingMarker ? editingMarker.id : Date.now(),
                 title: title,
                 description: descriptionInput.value.trim(),
                 date: dateInput.value,
+                category: category,
+                mission: missionInput.value.trim() || 'Unassigned',
                 lat: lat,
                 lng: lng,
                 mapMarker: newMapMarker
             };
             
-            // If editing, remove the old marker
             if (editingMarker) {
                 markers = markers.filter(m => m.id !== editingMarker.id);
             }
             
-            // Add popup to marker
             newMapMarker.bindPopup(`
                 <strong>${marker.title}</strong><br>
                 ${marker.description ? marker.description + '<br>' : ''}
                 ${marker.date ? 'Date: ' + marker.date + '<br>' : ''}
-                <small>Lat: ${lat.toFixed(6)}, Lng: ${lng.toFixed(6)}</small>
+                ${marker.mission ? 'Mission: ' + marker.mission + '<br>' : ''}
+                <small>Lat: ${marker.lat.toFixed(6)}, Lng: ${marker.lng.toFixed(6)}</small>
             `);
             
-            // Save marker
             markers.push(marker);
-            
-            // Reset current marker
+            addToHistory();
             currentMarker = null;
-            
-            // Update marker list
             updateMarkerList();
-            
-            // Hide form
+            updateMissionSelect();
+            updatePaths();
+            saveMarkersToLocalStorage();
             markerForm.style.display = 'none';
         });
 
-        // Cancel adding marker
         cancelButton.addEventListener('click', function() {
             if (currentMarker) {
                 map.removeLayer(currentMarker);
@@ -423,7 +456,6 @@
             markerForm.style.display = 'none';
         });
 
-        // Update marker list in sidebar
         function updateMarkerList() {
             if (markers.length === 0) {
                 markerList.innerHTML = '<p>No markers added yet. Click on the map to add one.</p>';
@@ -436,9 +468,10 @@
                 const item = document.createElement('div');
                 item.className = 'marker-item';
                 item.innerHTML = `
-                    <h3>${marker.title}</h3>
+                    <h3><span class="category" style="background-color: ${marker.category};"></span>${marker.title}</h3>
                     ${marker.description ? '<p>' + marker.description + '</p>' : ''}
                     ${marker.date ? '<p>Date: ' + marker.date + '</p>' : ''}
+                    ${marker.mission ? '<p>Mission: ' + marker.mission + '</p>' : ''}
                     <p>Lat: ${marker.lat.toFixed(6)}, Lng: ${marker.lng.toFixed(6)}</p>
                     <div class="marker-actions">
                         <button class="fly-to" data-id="${marker.id}">Fly To</button>
@@ -449,7 +482,6 @@
                 
                 markerList.appendChild(item);
                 
-                // Add event listeners for buttons
                 item.querySelector('.fly-to').addEventListener('click', function() {
                     map.flyTo([marker.lat, marker.lng], 10);
                 });
@@ -464,45 +496,144 @@
             });
         }
 
-        // Edit marker
         function editMarker(id) {
             const marker = markers.find(m => m.id === id);
             if (!marker) return;
             
-            // Set current marker to the marker being edited
             currentMarker = marker.mapMarker;
             editingMarker = marker;
             
-            // Fill form
             titleInput.value = marker.title;
             descriptionInput.value = marker.description;
             dateInput.value = marker.date;
+            categoryInput.value = marker.category;
+            missionInput.value = marker.mission || '';
             markerLatInput.value = marker.lat.toFixed(6);
             markerLngInput.value = marker.lng.toFixed(6);
             
-            // Show form
             markerForm.style.display = 'block';
-            
-            // Pan to marker
             map.flyTo([marker.lat, marker.lng], 10);
         }
 
-        // Delete marker
         function deleteMarker(id) {
             const marker = markers.find(m => m.id === id);
             if (!marker) return;
             
-            // Remove marker from map
             map.removeLayer(marker.mapMarker);
-            
-            // Remove marker from array
             markers = markers.filter(m => m.id !== id);
-            
-            // Update marker list
+            addToHistory();
             updateMarkerList();
+            updateMissionSelect();
+            updatePaths();
+            saveMarkersToLocalStorage();
         }
 
-        // Export markers as JSON
+        function updateMissionSelect() {
+            const missions = [...new Set(markers.map(m => m.mission || 'Unassigned'))].sort();
+            const currentSelection = missionSelect.value;
+            
+            while (missionSelect.options.length > 1) {
+                missionSelect.remove(1);
+            }
+            
+            missions.forEach(mission => {
+                const option = document.createElement('option');
+                option.value = mission;
+                option.textContent = mission;
+                missionSelect.appendChild(option);
+            });
+            
+            if (missions.includes(currentSelection)) {
+                missionSelect.value = currentSelection;
+            }
+            updatePaths();
+        }
+
+        function drawPathForMission(mission) {
+            // Remove existing polyline for this mission
+            if (polylines[mission]) {
+                map.removeLayer(polylines[mission]);
+                delete polylines[mission];
+            }
+            
+            // Get markers for the mission
+            const missionMarkers = markers.filter(m => m.mission === mission);
+            
+            if (missionMarkers.length < 2) return; // Need at least 2 markers for a path
+            
+            // Sort markers by date (if available) or id
+            missionMarkers.sort((a, b) => {
+                if (a.date && b.date) {
+                    return new Date(a.date) - new Date(b.date);
+                }
+                return a.id - b.id;
+            });
+            
+            // Create coordinates array
+            const coords = missionMarkers.map(m => [m.lat, m.lng]);
+            
+            // Draw polyline
+            polylines[mission] = L.polyline(coords, {
+                color: 'blue',
+                weight: 3,
+                opacity: 0.7
+            });
+            
+            if (showPathCheckbox.checked) {
+                polylines[mission].addTo(map);
+            }
+        }
+
+        function updatePaths() {
+            // Update paths for all missions
+            const missions = [...new Set(markers.map(m => m.mission || 'Unassigned'))];
+            missions.forEach(mission => {
+                if (missionSelect.value === 'all' || missionSelect.value === mission) {
+                    drawPathForMission(mission);
+                } else {
+                    if (polylines[mission]) {
+                        map.removeLayer(polylines[mission]);
+                        delete polylines[mission];
+                    }
+                }
+            });
+        }
+
+        function filterMarkersByMission(missionName) {
+            const visibleMarkersIds = [];
+            
+            markers.forEach(marker => {
+                const isVisible = missionName === 'all' || marker.mission === missionName;
+                if (isVisible) {
+                    marker.mapMarker.addTo(map);
+                    visibleMarkersIds.push(marker.id);
+                } else {
+                    map.removeLayer(marker.mapMarker);
+                }
+            });
+            
+            document.querySelectorAll('.marker-item').forEach(item => {
+                const markerId = parseInt(item.querySelector('.fly-to').dataset.id);
+                item.style.display = visibleMarkersIds.includes(markerId) ? 'block' : 'none';
+            });
+            
+            if (visibleMarkersIds.length === 0 && markers.length > 0) {
+                const noResults = document.createElement('p');
+                noResults.textContent = `No markers found for mission "${missionName}".`;
+                markerList.appendChild(noResults);
+            }
+            
+            updatePaths();
+        }
+
+        missionSelect.addEventListener('change', function() {
+            filterMarkersByMission(this.value);
+        });
+
+        showPathCheckbox.addEventListener('change', function() {
+            updatePaths();
+        });
+
         exportButton.addEventListener('click', function() {
             if (markers.length === 0) {
                 alert('No markers to export.');
@@ -514,13 +645,14 @@
                 title: marker.title,
                 description: marker.description,
                 date: marker.date,
+                category: marker.category,
+                mission: marker.mission,
                 lat: marker.lat,
                 lng: marker.lng
             }));
             
             const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
             const url = URL.createObjectURL(blob);
-            
             const a = document.createElement('a');
             a.href = url;
             a.download = 'map-markers.json';
@@ -530,7 +662,6 @@
             URL.revokeObjectURL(url);
         });
 
-        // Import markers from JSON
         importButton.addEventListener('click', function() {
             const input = document.createElement('input');
             input.type = 'file';
@@ -544,32 +675,33 @@
                 reader.onload = function(e) {
                     try {
                         const importedData = JSON.parse(e.target.result);
-                        
                         if (!Array.isArray(importedData)) {
                             throw new Error('Invalid data format');
                         }
                         
-                        // Remove all existing markers
-                        markers.forEach(marker => {
-                            map.removeLayer(marker.mapMarker);
-                        });
-                        
+                        markers.forEach(marker => map.removeLayer(marker.mapMarker));
                         markers = [];
+                        Object.keys(polylines).forEach(mission => {
+                            if (polylines[mission]) {
+                                map.removeLayer(polylines[mission]);
+                            }
+                        });
+                        polylines = {};
                         
-                        // Add imported markers
                         importedData.forEach(item => {
                             if (!item.title || !item.lat || !item.lng) {
                                 console.warn('Skipping invalid marker:', item);
                                 return;
                             }
                             
-                            const mapMarker = L.marker([item.lat, item.lng]).addTo(map);
-                            
+                            const mapMarker = L.marker([item.lat, item.lng], { icon: getMarkerIcon(item.category || 'red') }).addTo(map);
                             const marker = {
                                 id: item.id || Date.now() + Math.random(),
                                 title: item.title,
                                 description: item.description || '',
                                 date: item.date || '',
+                                category: item.category || 'red',
+                                mission: item.mission || 'Unassigned',
                                 lat: item.lat,
                                 lng: item.lng,
                                 mapMarker: mapMarker
@@ -579,15 +711,19 @@
                                 <strong>${marker.title}</strong><br>
                                 ${marker.description ? marker.description + '<br>' : ''}
                                 ${marker.date ? 'Date: ' + marker.date + '<br>' : ''}
+                                ${marker.mission ? 'Mission: ' + marker.mission + '<br>' : ''}
                                 <small>Lat: ${marker.lat.toFixed(6)}, Lng: ${marker.lng.toFixed(6)}</small>
                             `);
                             
                             markers.push(marker);
                         });
                         
+                        addToHistory();
                         updateMarkerList();
+                        updateMissionSelect();
+                        updatePaths();
+                        saveMarkersToLocalStorage();
                         
-                        // Fit map to show all markers if any
                         if (markers.length > 0) {
                             const group = new L.featureGroup(markers.map(m => m.mapMarker));
                             map.fitBounds(group.getBounds().pad(0.2));
@@ -605,46 +741,241 @@
             input.click();
         });
 
-        // Create map controls container
+        function saveMarkersToLocalStorage() {
+            localStorage.setItem('mapMarkers', JSON.stringify(markers.map(marker => ({
+                id: marker.id,
+                title: marker.title,
+                description: marker.description,
+                date: marker.date,
+                category: marker.category,
+                mission: marker.mission,
+                lat: marker.lat,
+                lng: marker.lng
+            }))));
+        }
+
+        function loadMarkersFromLocalStorage() {
+            try {
+                const savedMarkers = localStorage.getItem('mapMarkers');
+                if (savedMarkers) {
+                    const importedData = JSON.parse(savedMarkers);
+                    if (!Array.isArray(importedData)) {
+                        throw new Error('Invalid data format');
+                    }
+                    
+                    importedData.forEach(item => {
+                        if (!item.title || isNaN(item.lat) || isNaN(item.lng)) {
+                            console.warn('Skipping invalid marker:', item);
+                            return;
+                        }
+                        
+                        const mapMarker = L.marker([item.lat, item.lng], { icon: getMarkerIcon(item.category || 'red') }).addTo(map);
+                        const marker = {
+                            id: item.id || Date.now() + Math.random(),
+                            title: item.title,
+                            description: item.description || '',
+                            date: item.date || '',
+                            category: item.category || 'red',
+                            mission: item.mission || 'Unassigned',
+                            lat: parseFloat(item.lat),
+                            lng: parseFloat(item.lng),
+                            mapMarker: mapMarker
+                        };
+                        
+                        mapMarker.bindPopup(`
+                            <strong>${marker.title}</strong><br>
+                            ${marker.description ? marker.description + '<br>' : ''}
+                            ${marker.date ? 'Date: ' + marker.date + '<br>' : ''}
+                            ${marker.mission ? 'Mission: ' + marker.mission + '<br>' : ''}
+                            <small>Lat: ${marker.lat.toFixed(6)}, Lng: ${marker.lng.toFixed(6)}</small>
+                        `);
+                        
+                        markers.push(marker);
+                    });
+                    
+                    if (markers.length > 0) {
+                        addToHistory();
+                    }
+                    
+                    updateMarkerList();
+                    updateMissionSelect();
+                    updatePaths();
+                }
+            } catch (error) {
+                console.error('Error loading markers from local storage:', error);
+                localStorage.removeItem('mapMarkers');
+            }
+        }
+
+        function clearMarkers() {
+            markers.forEach(marker => map.removeLayer(marker.mapMarker));
+            Object.keys(polylines).forEach(mission => {
+                if (polylines[mission]) {
+                    map.removeLayer(polylines[mission]);
+                }
+            });
+            markers = [];
+            polylines = {};
+            history = [];
+            historyIndex = -1;
+            localStorage.removeItem('mapMarkers');
+            updateMarkerList();
+            updateMissionSelect();
+            updateUndoRedoButtons();
+        }
+
+        function addToHistory() {
+            if (historyIndex < history.length - 1) {
+                history = history.slice(0, historyIndex + 1);
+            }
+            
+            const markersCopy = markers.map(marker => ({
+                id: marker.id,
+                title: marker.title,
+                description: marker.description,
+                date: marker.date,
+                category: marker.category,
+                mission: marker.mission,
+                lat: marker.lat,
+                lng: marker.lng
+            }));
+            
+            history.push(markersCopy);
+            historyIndex = history.length - 1;
+            updateUndoRedoButtons();
+        }
+
+        function updateUndoRedoButtons() {
+            undoButton.disabled = historyIndex <= 0;
+            redoButton.disabled = historyIndex >= history.length - 1;
+        }
+
+        undoButton.addEventListener('click', function() {
+            if (historyIndex <= 0) return;
+            
+            historyIndex--;
+            restoreFromHistory();
+            updateUndoRedoButtons();
+        });
+
+        redoButton.addEventListener('click', function() {
+            if (historyIndex >= history.length - 1) return;
+            
+            historyIndex++;
+            restoreFromHistory();
+            updateUndoRedoButtons();
+        });
+
+        function restoreFromHistory() {
+            markers.forEach(marker => map.removeLayer(marker.mapMarker));
+            Object.keys(polylines).forEach(mission => {
+                if (polylines[mission]) {
+                    map.removeLayer(polylines[mission]);
+                }
+            });
+            markers = [];
+            polylines = {};
+            
+            const historicMarkers = history[historyIndex];
+            historicMarkers.forEach(item => {
+                const mapMarker = L.marker([item.lat, item.lng], { icon: getMarkerIcon(item.category || 'red') }).addTo(map);
+                const marker = {
+                    id: item.id,
+                    title: item.title,
+                    description: item.description || '',
+                    date: item.date || '',
+                    category: item.category || 'red',
+                    mission: item.mission || 'Unassigned',
+                    lat: item.lat,
+                    lng: item.lng,
+                    mapMarker: mapMarker
+                };
+                
+                mapMarker.bindPopup(`
+                    <strong>${marker.title}</strong><br>
+                    ${marker.description ? marker.description + '<br>' : ''}
+                    ${marker.date ? 'Date: ' + marker.date + '<br>' : ''}
+                    ${marker.mission ? 'Mission: ' + marker.mission + '<br>' : ''}
+                    <small>Lat: ${marker.lat.toFixed(6)}, Lng: ${marker.lng.toFixed(6)}</small>
+                `);
+                
+                markers.push(marker);
+            });
+            
+            updateMarkerList();
+            updateMissionSelect();
+            updatePaths();
+            saveMarkersToLocalStorage();
+        }
+
+        clearButton.addEventListener('click', function() {
+            if (markers.length === 0) {
+                alert('No markers to clear.');
+                return;
+            }
+            
+            if (confirm('Are you sure you want to clear all markers? This is not an action that can be undone.')) {
+                clearMarkers();
+            }
+        });
+
+        function validateCoordinates(lat, lng) {
+            if (isNaN(lat) || isNaN(lng)) {
+                return 'Please enter numeric values for coordinates.';
+            }
+            
+            if (lat < -90 || lat > 90) {
+                return 'Latitude must be between -90 and 90 degrees.';
+            }
+            
+            if (lng < -180 || lng > 180) {
+                return 'Longitude must be between -180 and 180 degrees.';
+            }
+            
+            return null;
+        }
+
+        // Add map controls
         const mapControlsDiv = document.createElement('div');
         mapControlsDiv.className = 'map-controls';
         document.querySelector('.content').appendChild(mapControlsDiv);
 
-        // Add map type switcher
         const mapTypeSelector = document.createElement('select');
-        mapTypes.forEach((type, index) => {
+        mapTypeSelector.id = 'base-layer-select';
+        mapControlsDiv.appendChild(mapTypeSelector);
+
+        mapTypes.forEach((mapType, index) => {
             const option = document.createElement('option');
             option.value = index;
-            option.textContent = type.name;
+            option.textContent = mapType.name;
             mapTypeSelector.appendChild(option);
         });
-        
+
         mapTypeSelector.addEventListener('change', function() {
-            const selectedIndex = parseInt(this.value);
-            const selectedType = mapTypes[selectedIndex];
-            
-            // Remove current base layer
+            const layerIndex = parseInt(this.value);
+            const selectedType = mapTypes[layerIndex];
+
             if (currentBaseLayer) {
                 map.removeLayer(currentBaseLayer);
             }
-            
-            // Add new base layer
+
             currentBaseLayer = L.tileLayer(selectedType.url, {
                 attribution: selectedType.attribution,
                 noWrap: false
             }).addTo(map);
-            
-            // Make sure the boundary layer is on top
+
+            // Add boundary layer for specific map types
+            if (['ArcGIS World Imagery', 'ArcGIS Shaded Relief', 'ArcGIS Physical Map'].includes(selectedType.name)) {
+                boundaryLayer.addTo(map);
+            } else {
+                map.removeLayer(boundaryLayer);
+            }
+
             if (boundaryLayer) {
                 boundaryLayer.bringToFront();
             }
         });
 
-        // Create control label
-        const mapTypeSelectorLabel = document.createElement('label');
-        mapTypeSelectorLabel.textContent = 'Map Type: ';
-        mapTypeSelectorLabel.style.marginRight = '5px';
-        
         // Add zoom controls
         const zoomControls = document.createElement('div');
         zoomControls.style.display = 'flex';
@@ -696,15 +1027,36 @@
         boundaryToggleContainer.appendChild(boundaryLabel);
 
         // Add controls to container
+        const mapTypeSelectorLabel = document.createElement('label');
+        mapTypeSelectorLabel.textContent = 'Map Type: ';
+        mapTypeSelectorLabel.style.marginRight = '5px';
+
         mapControlsDiv.appendChild(mapTypeSelectorLabel);
         mapControlsDiv.appendChild(mapTypeSelector);
         mapControlsDiv.appendChild(zoomControls);
         mapControlsDiv.appendChild(boundaryToggleContainer);
 
-        // Make sure boundary layer is on top
-        if (boundaryLayer) {
-            boundaryLayer.bringToFront();
+        // Initialize app
+        function initializeApp() {
+            loadMarkersFromLocalStorage();
+            updateUndoRedoButtons();
+            
+            if (markers.length > 0) {
+                const group = new L.featureGroup(markers.map(m => m.mapMarker));
+                map.fitBounds(group.getBounds().pad(0.2));
+            }
+
+            // Add boundary layer initially for specific map types
+            if (['ArcGIS World Imagery', 'ArcGIS Shaded Relief', 'ArcGIS Physical Map'].includes(mapTypes[0].name)) {
+                boundaryLayer.addTo(map);
+            }
         }
+
+        // Call initialize on load
+        document.addEventListener('DOMContentLoaded', () => {
+            map.invalidateSize();
+            initializeApp();
+        });
     </script>
 </body>
 </html>
